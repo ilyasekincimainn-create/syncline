@@ -33,7 +33,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.initWebSocketServer = initWebSocketServer;
+exports.initRedisSubscription = initRedisSubscription;
+exports.handleWebSocketConnection = handleWebSocketConnection;
 const ws_1 = require("ws");
 const db_1 = require("../services/db");
 const redis_1 = require("../services/redis");
@@ -41,7 +42,7 @@ const shared_1 = require("@syncline/shared");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const connections = new Map();
-// Setup JWT options (similar to auth-service)
+// Setup JWT options
 let jwtOptions;
 function getJwtOptions() {
     if (jwtOptions)
@@ -63,13 +64,19 @@ function getJwtOptions() {
     jwtOptions = { privateKeyOrSecret, publicKeyOrSecret, algorithm };
     return jwtOptions;
 }
-function initWebSocketServer(wss) {
-    // Subscribe to Redis pub/sub channel for cross-node message routing
+/**
+ * Initialize Redis pub/sub subscription for cross-node messaging.
+ * Call this once at startup, after Redis is connected.
+ */
+function initRedisSubscription() {
     try {
         if ((0, redis_1.isRedisConnected)()) {
             redis_1.redisSub.subscribe('sync-events', (err) => {
                 if (err) {
                     console.error('Failed to subscribe to sync-events channel:', err);
+                }
+                else {
+                    console.log('[Redis] Subscribed to sync-events channel');
                 }
             });
             redis_1.redisSub.on('message', (channel, message) => {
@@ -88,129 +95,137 @@ function initWebSocketServer(wss) {
             });
         }
         else {
-            console.warn('Redis not connected, cross-node messaging disabled');
+            console.warn('[Redis] Not connected, cross-node messaging disabled');
         }
     }
     catch (err) {
-        console.warn('Failed to setup Redis PubSub (non-fatal):', err);
+        console.warn('[Redis] Failed to setup PubSub (non-fatal):', err);
     }
-    wss.on('connection', (ws) => {
-        let clientConn = {
-            ws,
-            userId: '',
-            deviceId: '',
-            platform: 'android',
-            pairedDeviceId: null,
-            isAuthenticated: false,
-            lastPing: Date.now(),
-        };
-        const pingInterval = setInterval(() => {
-            if (!clientConn.isAuthenticated)
+}
+/**
+ * Handle a single WebSocket connection from the Fastify /ws route.
+ * Called by Fastify's @fastify/websocket plugin for each new connection.
+ */
+function handleWebSocketConnection(ws, req) {
+    console.log(`[WS] WebSocket connection handler started for ${req.ip}`);
+    let clientConn = {
+        ws,
+        userId: '',
+        deviceId: '',
+        platform: 'android',
+        pairedDeviceId: null,
+        isAuthenticated: false,
+        lastPing: Date.now(),
+    };
+    const pingInterval = setInterval(() => {
+        if (!clientConn.isAuthenticated)
+            return;
+        if (Date.now() - clientConn.lastPing > 40000) {
+            console.log(`[WS] Connection timeout for device: ${clientConn.deviceId}`);
+            ws.close();
+            return;
+        }
+        if (ws.readyState === ws_1.WebSocket.OPEN) {
+            ws.send(JSON.stringify(shared_1.MessageFactory.heartbeatPong()));
+        }
+    }, 30000);
+    ws.on('message', async (data) => {
+        try {
+            const rawMessage = JSON.parse(data.toString());
+            if (!(0, shared_1.validateWSMessage)(rawMessage)) {
+                ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_BAD_REQUEST', 'Invalid message format')));
                 return;
-            if (Date.now() - clientConn.lastPing > 40000) {
-                console.log(`Connection timeout for device: ${clientConn.deviceId}`);
+            }
+            const msg = rawMessage;
+            // 1. Authenticate check
+            if (msg.type === shared_1.WSMessageType.AUTH) {
+                const authPayload = msg.payload;
+                try {
+                    const tokenPayload = (0, shared_1.verifyAccessToken)(authPayload.accessToken, getJwtOptions());
+                    // Validate device
+                    const deviceQuery = await db_1.pool.query('SELECT platform FROM devices WHERE id = $1', [authPayload.deviceId]);
+                    if (deviceQuery.rows.length === 0) {
+                        ws.send(JSON.stringify(shared_1.MessageFactory.authFail('Device not registered')));
+                        ws.close();
+                        return;
+                    }
+                    const platform = deviceQuery.rows[0].platform;
+                    // Load pairing info
+                    const pairQuery = await db_1.pool.query(`SELECT id, android_device_id, ios_device_id 
+             FROM users 
+             WHERE android_device_id = $1 OR ios_device_id = $1`, [authPayload.deviceId]);
+                    let pairedDeviceId = null;
+                    if (pairQuery.rows.length > 0) {
+                        const userRow = pairQuery.rows[0];
+                        pairedDeviceId = platform === 'android' ? userRow.ios_device_id : userRow.android_device_id;
+                    }
+                    clientConn.userId = tokenPayload.sub;
+                    clientConn.deviceId = authPayload.deviceId;
+                    clientConn.platform = platform;
+                    clientConn.pairedDeviceId = pairedDeviceId;
+                    clientConn.isAuthenticated = true;
+                    clientConn.lastPing = Date.now();
+                    connections.set(authPayload.deviceId, clientConn);
+                    ws.send(JSON.stringify(shared_1.MessageFactory.authOk({
+                        paired: pairedDeviceId !== null,
+                        pairedDeviceId: pairedDeviceId || undefined
+                    })));
+                    console.log(`[WS] Device connected: ${authPayload.deviceId} (${platform}) for user ${tokenPayload.sub}`);
+                    // Flush offline queue if iOS reconnected
+                    if (platform === 'ios') {
+                        await flushOfflineQueue(clientConn);
+                    }
+                    // Update last_seen in DB
+                    await db_1.pool.query('UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = $1', [clientConn.deviceId]);
+                }
+                catch (err) {
+                    ws.send(JSON.stringify(shared_1.MessageFactory.authFail('Token invalid or expired')));
+                    ws.close();
+                }
+                return;
+            }
+            if (!clientConn.isAuthenticated) {
+                ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_UNAUTHORIZED', 'Not authenticated')));
                 ws.close();
                 return;
             }
-            if (ws.readyState === ws_1.WebSocket.OPEN) {
-                ws.send(JSON.stringify(shared_1.MessageFactory.heartbeatPong()));
+            // Keepalive update
+            clientConn.lastPing = Date.now();
+            // 2. Route messages
+            switch (msg.type) {
+                case shared_1.WSMessageType.HEARTBEAT_PING:
+                    ws.send(JSON.stringify(shared_1.MessageFactory.heartbeatPong()));
+                    break;
+                case shared_1.WSMessageType.SMS_EVENT:
+                    await handleSmsEvent(clientConn, msg);
+                    break;
+                case shared_1.WSMessageType.CALL_EVENT:
+                    await handleCallEvent(clientConn, msg);
+                    break;
+                case shared_1.WSMessageType.NOTIFICATION_EVENT:
+                    await handleNotificationEvent(clientConn, msg);
+                    break;
+                case shared_1.WSMessageType.ACK:
+                    await handleAck(clientConn, msg);
+                    break;
+                default:
+                    ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_BAD_REQUEST', 'Unknown message type')));
             }
-        }, 30000);
-        ws.on('message', async (data) => {
-            try {
-                const rawMessage = JSON.parse(data);
-                if (!(0, shared_1.validateWSMessage)(rawMessage)) {
-                    ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_BAD_REQUEST', 'Invalid message format')));
-                    return;
-                }
-                const msg = rawMessage;
-                // 1. Authenticate check
-                if (msg.type === shared_1.WSMessageType.AUTH) {
-                    const authPayload = msg.payload;
-                    try {
-                        const tokenPayload = (0, shared_1.verifyAccessToken)(authPayload.accessToken, getJwtOptions());
-                        // Validate device
-                        const deviceQuery = await db_1.pool.query('SELECT platform FROM devices WHERE id = $1', [authPayload.deviceId]);
-                        if (deviceQuery.rows.length === 0) {
-                            ws.send(JSON.stringify(shared_1.MessageFactory.authFail('Device not registered')));
-                            ws.close();
-                            return;
-                        }
-                        const platform = deviceQuery.rows[0].platform;
-                        // Load pairing info
-                        const pairQuery = await db_1.pool.query(`SELECT id, android_device_id, ios_device_id 
-               FROM users 
-               WHERE android_device_id = $1 OR ios_device_id = $1`, [authPayload.deviceId]);
-                        let pairedDeviceId = null;
-                        if (pairQuery.rows.length > 0) {
-                            const userRow = pairQuery.rows[0];
-                            pairedDeviceId = platform === 'android' ? userRow.ios_device_id : userRow.android_device_id;
-                        }
-                        clientConn.userId = tokenPayload.sub;
-                        clientConn.deviceId = authPayload.deviceId;
-                        clientConn.platform = platform;
-                        clientConn.pairedDeviceId = pairedDeviceId;
-                        clientConn.isAuthenticated = true;
-                        clientConn.lastPing = Date.now();
-                        connections.set(authPayload.deviceId, clientConn);
-                        ws.send(JSON.stringify(shared_1.MessageFactory.authOk({
-                            paired: pairedDeviceId !== null,
-                            pairedDeviceId: pairedDeviceId || undefined
-                        })));
-                        console.log(`Device connected: ${authPayload.deviceId} (${platform}) for user ${tokenPayload.sub}`);
-                        // Flush offline queue if iOS reconnected
-                        if (platform === 'ios') {
-                            await flushOfflineQueue(clientConn);
-                        }
-                        // Update last_seen in DB
-                        await db_1.pool.query('UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = $1', [clientConn.deviceId]);
-                    }
-                    catch (err) {
-                        ws.send(JSON.stringify(shared_1.MessageFactory.authFail('Token invalid or expired')));
-                        ws.close();
-                    }
-                    return;
-                }
-                if (!clientConn.isAuthenticated) {
-                    ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_UNAUTHORIZED', 'Not authenticated')));
-                    ws.close();
-                    return;
-                }
-                // Keepalive update
-                clientConn.lastPing = Date.now();
-                // 2. Route messages
-                switch (msg.type) {
-                    case shared_1.WSMessageType.HEARTBEAT_PING:
-                        ws.send(JSON.stringify(shared_1.MessageFactory.heartbeatPong()));
-                        break;
-                    case shared_1.WSMessageType.SMS_EVENT:
-                        await handleSmsEvent(clientConn, msg);
-                        break;
-                    case shared_1.WSMessageType.CALL_EVENT:
-                        await handleCallEvent(clientConn, msg);
-                        break;
-                    case shared_1.WSMessageType.NOTIFICATION_EVENT:
-                        await handleNotificationEvent(clientConn, msg);
-                        break;
-                    case shared_1.WSMessageType.ACK:
-                        await handleAck(clientConn, msg);
-                        break;
-                    default:
-                        ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_BAD_REQUEST', 'Unknown message type')));
-                }
-            }
-            catch (err) {
-                console.error('Error handling message:', err);
-                ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_INTERNAL_ERROR', 'Failed to process message')));
-            }
-        });
-        ws.on('close', () => {
-            clearInterval(pingInterval);
-            if (clientConn.deviceId) {
-                connections.delete(clientConn.deviceId);
-                console.log(`Device disconnected: ${clientConn.deviceId}`);
-            }
-        });
+        }
+        catch (err) {
+            console.error('[WS] Error handling message:', err);
+            ws.send(JSON.stringify(shared_1.MessageFactory.error('ERR_INTERNAL_ERROR', 'Failed to process message')));
+        }
+    });
+    ws.on('close', () => {
+        clearInterval(pingInterval);
+        if (clientConn.deviceId) {
+            connections.delete(clientConn.deviceId);
+            console.log(`[WS] Device disconnected: ${clientConn.deviceId}`);
+        }
+    });
+    ws.on('error', (err) => {
+        console.error(`[WS] WebSocket error for device ${clientConn.deviceId}:`, err.message);
     });
 }
 async function handleSmsEvent(conn, msg) {
@@ -287,7 +302,6 @@ async function handleCallEvent(conn, msg) {
             answeredAt,
             endedAt,
         });
-        // Call events must trigger dynamic alerts.
         // Route to iOS if online
         let delivered = false;
         if (conn.pairedDeviceId) {
@@ -310,10 +324,8 @@ async function handleCallEvent(conn, msg) {
     }
 }
 async function handleNotificationEvent(conn, msg) {
-    // Similar to SMS, mirror notifications to iOS if whitelist matches
     const { packageName, appName, title, contentEncrypted, contentIv, postedAt } = msg.payload;
     try {
-        // For MVP, we pass notifications directly without DB persistence, or offline queue only
         const wsEvent = shared_1.MessageFactory.notificationReceived({
             id: msg.id,
             packageName,
@@ -384,7 +396,7 @@ async function flushOfflineQueue(conn) {
        ORDER BY created_at ASC`, [conn.userId]);
         if (res.rows.length === 0)
             return;
-        console.log(`Flushing ${res.rows.length} offline events to iOS device ${conn.deviceId}`);
+        console.log(`[WS] Flushing ${res.rows.length} offline events to iOS device ${conn.deviceId}`);
         const events = [];
         for (const row of res.rows) {
             try {

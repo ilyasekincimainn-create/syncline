@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import { FastifyRequest } from 'fastify';
 import { pool } from '../services/db';
 import { redisPub, redisSub, publishToStream, isRedisConnected } from '../services/redis';
 import { 
@@ -31,7 +32,7 @@ interface ActiveConnection {
 
 const connections = new Map<string, ActiveConnection>();
 
-// Setup JWT options (similar to auth-service)
+// Setup JWT options
 let jwtOptions: JwtOptions;
 function getJwtOptions(): JwtOptions {
   if (jwtOptions) return jwtOptions;
@@ -54,13 +55,18 @@ function getJwtOptions(): JwtOptions {
   return jwtOptions;
 }
 
-export function initWebSocketServer(wss: any) {
-  // Subscribe to Redis pub/sub channel for cross-node message routing
+/**
+ * Initialize Redis pub/sub subscription for cross-node messaging.
+ * Call this once at startup, after Redis is connected.
+ */
+export function initRedisSubscription() {
   try {
     if (isRedisConnected()) {
       redisSub.subscribe('sync-events', (err) => {
         if (err) {
           console.error('Failed to subscribe to sync-events channel:', err);
+        } else {
+          console.log('[Redis] Subscribed to sync-events channel');
         }
       });
 
@@ -78,154 +84,164 @@ export function initWebSocketServer(wss: any) {
         }
       });
     } else {
-      console.warn('Redis not connected, cross-node messaging disabled');
+      console.warn('[Redis] Not connected, cross-node messaging disabled');
     }
   } catch (err) {
-    console.warn('Failed to setup Redis PubSub (non-fatal):', err);
+    console.warn('[Redis] Failed to setup PubSub (non-fatal):', err);
   }
+}
 
-  wss.on('connection', (ws: WebSocket) => {
-    let clientConn: ActiveConnection = {
-      ws,
-      userId: '',
-      deviceId: '',
-      platform: 'android',
-      pairedDeviceId: null,
-      isAuthenticated: false,
-      lastPing: Date.now(),
-    };
+/**
+ * Handle a single WebSocket connection from the Fastify /ws route.
+ * Called by Fastify's @fastify/websocket plugin for each new connection.
+ */
+export function handleWebSocketConnection(ws: WebSocket, req: FastifyRequest) {
+  console.log(`[WS] WebSocket connection handler started for ${req.ip}`);
+  
+  let clientConn: ActiveConnection = {
+    ws,
+    userId: '',
+    deviceId: '',
+    platform: 'android',
+    pairedDeviceId: null,
+    isAuthenticated: false,
+    lastPing: Date.now(),
+  };
 
-    const pingInterval = setInterval(() => {
-      if (!clientConn.isAuthenticated) return;
-      
-      if (Date.now() - clientConn.lastPing > 40000) {
-        console.log(`Connection timeout for device: ${clientConn.deviceId}`);
+  const pingInterval = setInterval(() => {
+    if (!clientConn.isAuthenticated) return;
+    
+    if (Date.now() - clientConn.lastPing > 40000) {
+      console.log(`[WS] Connection timeout for device: ${clientConn.deviceId}`);
+      ws.close();
+      return;
+    }
+    
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(MessageFactory.heartbeatPong()));
+    }
+  }, 30000);
+
+  ws.on('message', async (data: string) => {
+    try {
+      const rawMessage = JSON.parse(data.toString());
+      if (!validateWSMessage(rawMessage)) {
+        ws.send(JSON.stringify(MessageFactory.error('ERR_BAD_REQUEST', 'Invalid message format')));
+        return;
+      }
+
+      const msg = rawMessage as WSMessage;
+
+      // 1. Authenticate check
+      if (msg.type === WSMessageType.AUTH) {
+        const authPayload = msg.payload as WSAuthPayload;
+        try {
+          const tokenPayload = verifyAccessToken(authPayload.accessToken, getJwtOptions());
+          
+          // Validate device
+          const deviceQuery = await pool.query('SELECT platform FROM devices WHERE id = $1', [authPayload.deviceId]);
+          if (deviceQuery.rows.length === 0) {
+            ws.send(JSON.stringify(MessageFactory.authFail('Device not registered')));
+            ws.close();
+            return;
+          }
+
+          const platform = deviceQuery.rows[0].platform;
+
+          // Load pairing info
+          const pairQuery = await pool.query(
+            `SELECT id, android_device_id, ios_device_id 
+             FROM users 
+             WHERE android_device_id = $1 OR ios_device_id = $1`,
+            [authPayload.deviceId]
+          );
+
+          let pairedDeviceId: string | null = null;
+          if (pairQuery.rows.length > 0) {
+            const userRow = pairQuery.rows[0];
+            pairedDeviceId = platform === 'android' ? userRow.ios_device_id : userRow.android_device_id;
+          }
+
+          clientConn.userId = tokenPayload.sub;
+          clientConn.deviceId = authPayload.deviceId;
+          clientConn.platform = platform;
+          clientConn.pairedDeviceId = pairedDeviceId;
+          clientConn.isAuthenticated = true;
+          clientConn.lastPing = Date.now();
+
+          connections.set(authPayload.deviceId, clientConn);
+
+          ws.send(JSON.stringify(MessageFactory.authOk({ 
+            paired: pairedDeviceId !== null, 
+            pairedDeviceId: pairedDeviceId || undefined 
+          })));
+
+          console.log(`[WS] Device connected: ${authPayload.deviceId} (${platform}) for user ${tokenPayload.sub}`);
+
+          // Flush offline queue if iOS reconnected
+          if (platform === 'ios') {
+            await flushOfflineQueue(clientConn);
+          }
+
+          // Update last_seen in DB
+          await pool.query('UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = $1', [clientConn.deviceId]);
+        } catch (err) {
+          ws.send(JSON.stringify(MessageFactory.authFail('Token invalid or expired')));
+          ws.close();
+        }
+        return;
+      }
+
+      if (!clientConn.isAuthenticated) {
+        ws.send(JSON.stringify(MessageFactory.error('ERR_UNAUTHORIZED', 'Not authenticated')));
         ws.close();
         return;
       }
-      
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(MessageFactory.heartbeatPong()));
+
+      // Keepalive update
+      clientConn.lastPing = Date.now();
+
+      // 2. Route messages
+      switch (msg.type) {
+        case WSMessageType.HEARTBEAT_PING:
+          ws.send(JSON.stringify(MessageFactory.heartbeatPong()));
+          break;
+
+        case WSMessageType.SMS_EVENT:
+          await handleSmsEvent(clientConn, msg as WSMessage<WSSmsPayload>);
+          break;
+
+        case WSMessageType.CALL_EVENT:
+          await handleCallEvent(clientConn, msg as WSMessage<WSCallPayload>);
+          break;
+
+        case WSMessageType.NOTIFICATION_EVENT:
+          await handleNotificationEvent(clientConn, msg as WSMessage<WSNotificationPayload>);
+          break;
+
+        case WSMessageType.ACK:
+          await handleAck(clientConn, msg as WSMessage<WSAckPayload>);
+          break;
+
+        default:
+          ws.send(JSON.stringify(MessageFactory.error('ERR_BAD_REQUEST', 'Unknown message type')));
       }
-    }, 30000);
+    } catch (err) {
+      console.error('[WS] Error handling message:', err);
+      ws.send(JSON.stringify(MessageFactory.error('ERR_INTERNAL_ERROR', 'Failed to process message')));
+    }
+  });
 
-    ws.on('message', async (data: string) => {
-      try {
-        const rawMessage = JSON.parse(data);
-        if (!validateWSMessage(rawMessage)) {
-          ws.send(JSON.stringify(MessageFactory.error('ERR_BAD_REQUEST', 'Invalid message format')));
-          return;
-        }
+  ws.on('close', () => {
+    clearInterval(pingInterval);
+    if (clientConn.deviceId) {
+      connections.delete(clientConn.deviceId);
+      console.log(`[WS] Device disconnected: ${clientConn.deviceId}`);
+    }
+  });
 
-        const msg = rawMessage as WSMessage;
-
-        // 1. Authenticate check
-        if (msg.type === WSMessageType.AUTH) {
-          const authPayload = msg.payload as WSAuthPayload;
-          try {
-            const tokenPayload = verifyAccessToken(authPayload.accessToken, getJwtOptions());
-            
-            // Validate device
-            const deviceQuery = await pool.query('SELECT platform FROM devices WHERE id = $1', [authPayload.deviceId]);
-            if (deviceQuery.rows.length === 0) {
-              ws.send(JSON.stringify(MessageFactory.authFail('Device not registered')));
-              ws.close();
-              return;
-            }
-
-            const platform = deviceQuery.rows[0].platform;
-
-            // Load pairing info
-            const pairQuery = await pool.query(
-              `SELECT id, android_device_id, ios_device_id 
-               FROM users 
-               WHERE android_device_id = $1 OR ios_device_id = $1`,
-              [authPayload.deviceId]
-            );
-
-            let pairedDeviceId: string | null = null;
-            if (pairQuery.rows.length > 0) {
-              const userRow = pairQuery.rows[0];
-              pairedDeviceId = platform === 'android' ? userRow.ios_device_id : userRow.android_device_id;
-            }
-
-            clientConn.userId = tokenPayload.sub;
-            clientConn.deviceId = authPayload.deviceId;
-            clientConn.platform = platform;
-            clientConn.pairedDeviceId = pairedDeviceId;
-            clientConn.isAuthenticated = true;
-            clientConn.lastPing = Date.now();
-
-            connections.set(authPayload.deviceId, clientConn);
-
-            ws.send(JSON.stringify(MessageFactory.authOk({ 
-              paired: pairedDeviceId !== null, 
-              pairedDeviceId: pairedDeviceId || undefined 
-            })));
-
-            console.log(`Device connected: ${authPayload.deviceId} (${platform}) for user ${tokenPayload.sub}`);
-
-            // Flush offline queue if iOS reconnected
-            if (platform === 'ios') {
-              await flushOfflineQueue(clientConn);
-            }
-
-            // Update last_seen in DB
-            await pool.query('UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE id = $1', [clientConn.deviceId]);
-          } catch (err) {
-            ws.send(JSON.stringify(MessageFactory.authFail('Token invalid or expired')));
-            ws.close();
-          }
-          return;
-        }
-
-        if (!clientConn.isAuthenticated) {
-          ws.send(JSON.stringify(MessageFactory.error('ERR_UNAUTHORIZED', 'Not authenticated')));
-          ws.close();
-          return;
-        }
-
-        // Keepalive update
-        clientConn.lastPing = Date.now();
-
-        // 2. Route messages
-        switch (msg.type) {
-          case WSMessageType.HEARTBEAT_PING:
-            ws.send(JSON.stringify(MessageFactory.heartbeatPong()));
-            break;
-
-          case WSMessageType.SMS_EVENT:
-            await handleSmsEvent(clientConn, msg as WSMessage<WSSmsPayload>);
-            break;
-
-          case WSMessageType.CALL_EVENT:
-            await handleCallEvent(clientConn, msg as WSMessage<WSCallPayload>);
-            break;
-
-          case WSMessageType.NOTIFICATION_EVENT:
-            await handleNotificationEvent(clientConn, msg as WSMessage<WSNotificationPayload>);
-            break;
-
-          case WSMessageType.ACK:
-            await handleAck(clientConn, msg as WSMessage<WSAckPayload>);
-            break;
-
-          default:
-            ws.send(JSON.stringify(MessageFactory.error('ERR_BAD_REQUEST', 'Unknown message type')));
-        }
-      } catch (err) {
-        console.error('Error handling message:', err);
-        ws.send(JSON.stringify(MessageFactory.error('ERR_INTERNAL_ERROR', 'Failed to process message')));
-      }
-    });
-
-    ws.on('close', () => {
-      clearInterval(pingInterval);
-      if (clientConn.deviceId) {
-        connections.delete(clientConn.deviceId);
-        console.log(`Device disconnected: ${clientConn.deviceId}`);
-      }
-    });
+  ws.on('error', (err) => {
+    console.error(`[WS] WebSocket error for device ${clientConn.deviceId}:`, err.message);
   });
 }
 
@@ -319,7 +335,6 @@ async function handleCallEvent(conn: ActiveConnection, msg: WSMessage<WSCallPayl
       endedAt,
     });
 
-    // Call events must trigger dynamic alerts.
     // Route to iOS if online
     let delivered = false;
     if (conn.pairedDeviceId) {
@@ -344,11 +359,9 @@ async function handleCallEvent(conn: ActiveConnection, msg: WSMessage<WSCallPayl
 }
 
 async function handleNotificationEvent(conn: ActiveConnection, msg: WSMessage<WSNotificationPayload>) {
-  // Similar to SMS, mirror notifications to iOS if whitelist matches
   const { packageName, appName, title, contentEncrypted, contentIv, postedAt } = msg.payload;
   
   try {
-    // For MVP, we pass notifications directly without DB persistence, or offline queue only
     const wsEvent = MessageFactory.notificationReceived({
       id: msg.id,
       packageName,
@@ -434,7 +447,7 @@ async function flushOfflineQueue(conn: ActiveConnection) {
 
     if (res.rows.length === 0) return;
 
-    console.log(`Flushing ${res.rows.length} offline events to iOS device ${conn.deviceId}`);
+    console.log(`[WS] Flushing ${res.rows.length} offline events to iOS device ${conn.deviceId}`);
     const events: WSMessage[] = [];
 
     for (const row of res.rows) {

@@ -67,36 +67,45 @@ async function main() {
             max: 100,
             timeWindow: '1 minute',
         });
-        // Register @fastify/websocket
+        // Register @fastify/websocket plugin
         await fastify.register(websocket_1.default, {
             options: {
                 maxPayload: 1048576, // 1MB
             }
         });
-        // Define websocket route
-        fastify.get('/ws', { websocket: true }, () => {
-            // Handled by initWebSocketServer through fastify.websocketServer
+        // WebSocket route - each connection handled by handleWebSocketConnection
+        fastify.get('/ws', { websocket: true }, (connection /* SocketStream */, req) => {
+            console.log(`[WS] New WebSocket connection from ${req.ip}`);
+            (0, server_1.handleWebSocketConnection)(connection.socket, req);
         });
-        // Register routes
+        // Register auth routes
         await fastify.register(auth_1.authRoutes, { prefix: '/api/auth' });
-        // Health check
+        // Health check - also lists registered routes for debugging
         fastify.get('/health', async () => {
-            return { status: 'healthy', service: 'auth-sync-combined-service', timestamp: new Date().toISOString() };
+            return {
+                status: 'healthy',
+                service: 'auth-sync-combined-service',
+                timestamp: new Date().toISOString(),
+                wsEndpoint: '/ws',
+            };
         });
-        // Initialize custom wss logic by awaiting fastify's readiness
+        // Wait for all plugins and routes to be registered
         await fastify.ready();
-        // Connect Redis gracefully (non-blocking, server starts even if Redis is down)
+        // Log all registered routes for debugging
+        const routes = fastify.printRoutes();
+        console.log('=== Registered Routes ===');
+        console.log(routes);
+        console.log('=========================');
+        // Connect Redis gracefully (non-blocking)
         await (0, redis_1.connectRedis)();
-        const wss = fastify.websocketServer;
-        if (!wss) {
-            throw new Error('WebSocket server was not initialized');
-        }
-        (0, server_1.initWebSocketServer)(wss);
+        // Setup Redis pub/sub for cross-node messaging
+        (0, server_1.initRedisSubscription)();
         console.log('Sync WebSocket server integrated and initialized successfully.');
         const port = parseInt(process.env.PORT || '3001', 10);
         const host = process.env.HOST || '0.0.0.0';
         await fastify.listen({ port, host });
         console.log(`Combined Auth & Sync Service is running on http://${host}:${port}`);
+        console.log(`WebSocket endpoint available at ws://${host}:${port}/ws`);
     }
     catch (error) {
         fastify.log.error(error);
