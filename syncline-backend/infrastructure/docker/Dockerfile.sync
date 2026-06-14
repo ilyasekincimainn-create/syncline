@@ -1,0 +1,30 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy root configurations
+COPY package.json tsconfig.base.json turbo.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
+
+# Copy shared package
+COPY packages/shared ./packages/shared
+
+# Copy sync service
+COPY services/sync-service ./services/sync-service
+
+# Install dependencies and build monorepo packages
+RUN npm ci
+RUN npm run build --workspace=@syncline/shared
+RUN npm run build --workspace=sync-service
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+COPY --from=builder /app /app
+
+ENV NODE_ENV=production
+
+WORKDIR /app/services/sync-service
+EXPOSE 3002
+
+CMD ["node", "dist/index.js"]

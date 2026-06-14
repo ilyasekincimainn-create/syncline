@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">SyncLine Companion</string>
+    <string name="notification_listener_name">SyncLine Notification Mirroring</string>
+    <string name="service_notification_title">SyncLine Aktif</string>
+    <string name="service_notification_desc">Telefonunuz eşleştirilmiş iOS cihaza yönlendiriliyor.</string>
+</resources>

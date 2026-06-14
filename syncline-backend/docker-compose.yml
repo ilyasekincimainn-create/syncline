@@ -1,0 +1,153 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: syncline-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: syncline
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - syncline-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d syncline"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: syncline-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - syncline-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: syncline-coturn
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "5349:5349/tcp"
+    volumes:
+      - ./infrastructure/coturn/turnserver.conf:/etc/coturn/turnserver.conf
+    networks:
+      - syncline-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: syncline-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth-service
+      - sync-service
+      - relay-service
+    networks:
+      - syncline-network
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.auth
+    container_name: syncline-auth-service
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/syncline?sslmode=disable
+      - JWT_SECRET=syncline_super_secret_jwt_key_2026
+      - JWT_ALGORITHM=HS256
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - syncline-network
+
+  sync-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.sync
+    container_name: syncline-sync-service
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - HOST=0.0.0.0
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/syncline?sslmode=disable
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=syncline_super_secret_jwt_key_2026
+      - JWT_ALGORITHM=HS256
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - syncline-network
+
+  push-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.push
+    container_name: syncline-push-service
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - HOST=0.0.0.0
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/syncline?sslmode=disable
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - syncline-network
+
+  relay-service:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.relay
+    container_name: syncline-relay-service
+    ports:
+      - "3004:3004"
+    environment:
+      - PORT=3004
+      - HOST=0.0.0.0
+      - REDIS_URL=redis://redis:6379
+      - TURN_SECRET=coturn_shared_secret
+      - TURN_URIS=turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp
+      - JWT_SECRET=syncline_super_secret_jwt_key_2026
+      - JWT_ALGORITHM=HS256
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - syncline-network
+
+networks:
+  syncline-network:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,37 @@
+{
+  "name": "SyncLine AltStore Repository",
+  "identifier": "com.syncline.companion.source",
+  "subtitle": "Hattını taşı, telefonu bırak - SyncLine Sideload Source",
+  "description": "SyncLine iOS Client for bridge companion operations.",
+  "iconURL": "https://raw.githubusercontent.com/syncline/companion/main/assets/icon.png",
+  "website": "https://github.com/syncline/companion",
+  "apps": [
+    {
+      "name": "SyncLine",
+      "bundleIdentifier": "com.syncline.companion",
+      "developerName": "SyncLine Open Source Team",
+      "version": "1.0",
+      "versionDate": "2026-06-14",
+      "versionDescription": "Initial release of SyncLine iOS Companion App bridging Calls, SMS, and Notifications.",
+      "downloadURL": "https://github.com/syncline/companion/releases/download/v1.0/SyncLine.ipa",
+      "localizedDescription": "SyncLine, evde veya ofiste bıraktığınız SIM kartlı Android telefonunuzdan gelen aramaları, SMS'leri ve bildirimleri hücresel hat olmayan iOS cihazınıza güvenli bir şekilde aktarır. E2E (AES-256-GCM) şifreleme ve düşük gecikmeli WebRTC ses köprüsü içerir.",
+      "iconURL": "https://raw.githubusercontent.com/syncline/companion/main/assets/icon.png",
+      "tintColor": "#00F0FF",
+      "size": 15728640,
+      "permissions": [
+        {
+          "type": "camera",
+          "usageDescription": "Eşleştirme QR kodunu taramak için kameraya erişilmesi gerekir."
+        },
+        {
+          "type": "microphone",
+          "usageDescription": "Gelen aramaları sesli yanıtlamak için mikrofona erişim gereklidir."
+        },
+        {
+          "type": "background-audio",
+          "usageDescription": "Arama köprüsü esnasında arka planda ses iletimini sürdürmek için kullanılır."
+        }
+      ]
+    }
+  ]
+}

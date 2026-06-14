@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude path="sharedpref/security_prefs.xml"/>
+        <exclude path="db/syncline.db"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude path="sharedpref/security_prefs.xml"/>
+        <exclude path="db/syncline.db"/>
+    </device-transfer>
+</data-extraction-rules>

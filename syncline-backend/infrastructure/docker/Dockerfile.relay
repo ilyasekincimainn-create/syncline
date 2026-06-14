@@ -1,0 +1,30 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy root configurations
+COPY package.json tsconfig.base.json turbo.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
+
+# Copy shared package
+COPY packages/shared ./packages/shared
+
+# Copy relay service
+COPY services/relay-service ./services/relay-service
+
+# Install dependencies and build monorepo packages
+RUN npm ci
+RUN npm run build --workspace=@syncline/shared
+RUN npm run build --workspace=relay-service
+
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+COPY --from=builder /app /app
+
+ENV NODE_ENV=production
+
+WORKDIR /app/services/relay-service
+EXPOSE 3004
+
+CMD ["node", "dist/index.js"]
