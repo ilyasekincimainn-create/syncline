@@ -65,25 +65,35 @@ function getJwtOptions() {
 }
 function initWebSocketServer(wss) {
     // Subscribe to Redis pub/sub channel for cross-node message routing
-    redis_1.redisSub.subscribe('sync-events', (err) => {
-        if (err) {
-            console.error('Failed to subscribe to sync-events channel:', err);
-        }
-    });
-    redis_1.redisSub.on('message', (channel, message) => {
-        if (channel === 'sync-events') {
-            try {
-                const { targetDeviceId, wsMessage } = JSON.parse(message);
-                const conn = connections.get(targetDeviceId);
-                if (conn && conn.ws.readyState === ws_1.WebSocket.OPEN) {
-                    conn.ws.send(JSON.stringify(wsMessage));
+    try {
+        if ((0, redis_1.isRedisConnected)()) {
+            redis_1.redisSub.subscribe('sync-events', (err) => {
+                if (err) {
+                    console.error('Failed to subscribe to sync-events channel:', err);
                 }
-            }
-            catch (err) {
-                console.error('Error handling Redis PubSub message:', err);
-            }
+            });
+            redis_1.redisSub.on('message', (channel, message) => {
+                if (channel === 'sync-events') {
+                    try {
+                        const { targetDeviceId, wsMessage } = JSON.parse(message);
+                        const conn = connections.get(targetDeviceId);
+                        if (conn && conn.ws.readyState === ws_1.WebSocket.OPEN) {
+                            conn.ws.send(JSON.stringify(wsMessage));
+                        }
+                    }
+                    catch (err) {
+                        console.error('Error handling Redis PubSub message:', err);
+                    }
+                }
+            });
         }
-    });
+        else {
+            console.warn('Redis not connected, cross-node messaging disabled');
+        }
+    }
+    catch (err) {
+        console.warn('Failed to setup Redis PubSub (non-fatal):', err);
+    }
     wss.on('connection', (ws) => {
         let clientConn = {
             ws,

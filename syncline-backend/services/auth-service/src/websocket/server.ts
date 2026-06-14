@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { pool } from '../services/db';
-import { redisPub, redisSub, publishToStream } from '../services/redis';
+import { redisPub, redisSub, publishToStream, isRedisConnected } from '../services/redis';
 import { 
   WSMessage, 
   WSMessageType, 
@@ -56,25 +56,33 @@ function getJwtOptions(): JwtOptions {
 
 export function initWebSocketServer(wss: any) {
   // Subscribe to Redis pub/sub channel for cross-node message routing
-  redisSub.subscribe('sync-events', (err) => {
-    if (err) {
-      console.error('Failed to subscribe to sync-events channel:', err);
-    }
-  });
-
-  redisSub.on('message', (channel, message) => {
-    if (channel === 'sync-events') {
-      try {
-        const { targetDeviceId, wsMessage } = JSON.parse(message);
-        const conn = connections.get(targetDeviceId);
-        if (conn && conn.ws.readyState === WebSocket.OPEN) {
-          conn.ws.send(JSON.stringify(wsMessage));
+  try {
+    if (isRedisConnected()) {
+      redisSub.subscribe('sync-events', (err) => {
+        if (err) {
+          console.error('Failed to subscribe to sync-events channel:', err);
         }
-      } catch (err) {
-        console.error('Error handling Redis PubSub message:', err);
-      }
+      });
+
+      redisSub.on('message', (channel, message) => {
+        if (channel === 'sync-events') {
+          try {
+            const { targetDeviceId, wsMessage } = JSON.parse(message);
+            const conn = connections.get(targetDeviceId);
+            if (conn && conn.ws.readyState === WebSocket.OPEN) {
+              conn.ws.send(JSON.stringify(wsMessage));
+            }
+          } catch (err) {
+            console.error('Error handling Redis PubSub message:', err);
+          }
+        }
+      });
+    } else {
+      console.warn('Redis not connected, cross-node messaging disabled');
     }
-  });
+  } catch (err) {
+    console.warn('Failed to setup Redis PubSub (non-fatal):', err);
+  }
 
   wss.on('connection', (ws: WebSocket) => {
     let clientConn: ActiveConnection = {

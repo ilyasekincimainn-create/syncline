@@ -37,24 +37,77 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.redisSub = exports.redisPub = void 0;
+exports.isRedisConnected = isRedisConnected;
+exports.connectRedis = connectRedis;
 exports.publishToStream = publishToStream;
 const ioredis_1 = __importDefault(require("ioredis"));
 const dotenv = __importStar(require("dotenv"));
 dotenv.config();
 const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 console.log('Connecting to Redis at:', redisUrl);
-exports.redisPub = new ioredis_1.default(redisUrl);
-exports.redisSub = new ioredis_1.default(redisUrl);
-exports.redisPub.on('error', (err) => console.error('Redis Publisher Error:', err));
-exports.redisSub.on('error', (err) => console.error('Redis Subscriber Error:', err));
-async function publishToStream(streamName, eventData) {
+// Configure Redis with retry strategy that doesn't crash the process
+const redisOptions = {
+    maxRetriesPerRequest: null,
+    retryStrategy: (times) => {
+        if (times > 10) {
+            console.warn('Redis: Max retry attempts reached, will retry in 30s');
+            return 30000; // retry every 30s after 10 attempts
+        }
+        return Math.min(times * 500, 5000); // exponential backoff up to 5s
+    },
+    lazyConnect: true, // Don't connect immediately on creation
+    enableOfflineQueue: false, // Don't queue commands when offline
+};
+exports.redisPub = new ioredis_1.default(redisUrl, redisOptions);
+exports.redisSub = new ioredis_1.default(redisUrl, redisOptions);
+let redisConnected = false;
+exports.redisPub.on('error', (err) => {
+    if (redisConnected) {
+        console.error('Redis Publisher Error:', err.message);
+    }
+    redisConnected = false;
+});
+exports.redisSub.on('error', (err) => {
+    if (redisConnected) {
+        console.error('Redis Subscriber Error:', err.message);
+    }
+    redisConnected = false;
+});
+exports.redisPub.on('connect', () => {
+    redisConnected = true;
+    console.log('Redis Publisher connected');
+});
+exports.redisSub.on('connect', () => {
+    console.log('Redis Subscriber connected');
+});
+function isRedisConnected() {
+    return redisConnected;
+}
+// Gracefully connect - don't throw if Redis is unavailable
+async function connectRedis() {
     try {
-        // Add to stream with automatic ID generation '*'
+        await Promise.all([
+            exports.redisPub.connect(),
+            exports.redisSub.connect(),
+        ]);
+        console.log('Redis connected successfully');
+    }
+    catch (err) {
+        console.warn('Redis connection failed (will retry in background):', err.message);
+        // Don't throw - let the server start without Redis
+    }
+}
+async function publishToStream(streamName, eventData) {
+    if (!redisConnected) {
+        console.warn(`Redis not connected, skipping publish to ${streamName}`);
+        return;
+    }
+    try {
         await exports.redisPub.xadd(streamName, '*', ...Object.entries(eventData).flat());
     }
     catch (error) {
-        console.error(`Failed to publish to Redis stream ${streamName}:`, error);
-        throw error;
+        console.error(`Failed to publish to Redis stream ${streamName}:`, error.message);
+        // Don't throw - graceful degradation
     }
 }
 //# sourceMappingURL=redis.js.map

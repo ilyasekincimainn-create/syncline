@@ -4,6 +4,7 @@ import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import { authRoutes } from './routes/auth';
 import { initWebSocketServer } from './websocket/server';
+import { connectRedis } from './services/redis';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -45,18 +46,6 @@ async function main() {
       // Handled by initWebSocketServer through fastify.websocketServer
     });
 
-    // Initialize custom wss logic by hooking to fastify's server
-    fastify.ready((err: Error | null) => {
-      if (err) throw err;
-      
-      const wss = fastify.websocketServer;
-      if (!wss) {
-        throw new Error('WebSocket server was not initialized');
-      }
-      initWebSocketServer(wss);
-      console.log('Sync WebSocket server integrated and initialized successfully.');
-    });
-
     // Register routes
     await fastify.register(authRoutes, { prefix: '/api/auth' });
 
@@ -64,6 +53,19 @@ async function main() {
     fastify.get('/health', async () => {
       return { status: 'healthy', service: 'auth-sync-combined-service', timestamp: new Date().toISOString() };
     });
+
+    // Initialize custom wss logic by awaiting fastify's readiness
+    await fastify.ready();
+
+    // Connect Redis gracefully (non-blocking, server starts even if Redis is down)
+    await connectRedis();
+
+    const wss = fastify.websocketServer;
+    if (!wss) {
+      throw new Error('WebSocket server was not initialized');
+    }
+    initWebSocketServer(wss);
+    console.log('Sync WebSocket server integrated and initialized successfully.');
 
     const port = parseInt(process.env.PORT || '3001', 10);
     const host = process.env.HOST || '0.0.0.0';
