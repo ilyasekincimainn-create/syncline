@@ -89,12 +89,16 @@ object AppModule {
     @Provides
     @Singleton
     fun provideWebSocketManager(
+        @ApplicationContext context: Context,
         okHttpClient: OkHttpClient,
-        tokenManager: TokenManager
+        tokenManager: TokenManager,
+        authApi: AuthApi
     ): WebSocketManager {
         return WebSocketManager(
+            context = context,
             client = okHttpClient,
             tokenManager = tokenManager,
+            authApi = authApi,
             serverUrl = WS_URL
         )
     }

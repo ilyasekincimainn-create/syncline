@@ -1,7 +1,11 @@
 package com.syncline.companion.data.remote.websocket
 
+import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
+import com.syncline.companion.data.remote.api.AuthApi
+import com.syncline.companion.data.remote.dto.RegisterRequest
+import com.syncline.companion.security.DeviceFingerprint
 import com.syncline.companion.security.TokenManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -12,8 +16,10 @@ import okhttp3.*
 import java.util.concurrent.TimeUnit
 
 class WebSocketManager(
+    private val context: Context,
     private val client: OkHttpClient,
     private val tokenManager: TokenManager,
+    private val authApi: AuthApi,
     private val serverUrl: String
 ) {
     private var webSocket: WebSocket? = null
@@ -36,6 +42,62 @@ class WebSocketManager(
         isConnecting = true
         shouldReconnect = true
 
+        scope.launch {
+            try {
+                var token = tokenManager.getAccessToken()
+                var deviceId = tokenManager.getDeviceId()
+
+                if (token.isNullOrEmpty() || deviceId.isNullOrEmpty()) {
+                    Log.d("WebSocketManager", "Device not registered or tokens missing. Registering device...")
+                    
+                    val uuid = DeviceFingerprint.getUuid(context)
+                    val fingerprint = DeviceFingerprint.getFingerprint(context)
+                    val model = DeviceFingerprint.getModel()
+                    val osVersion = DeviceFingerprint.getOsVersion()
+                    
+                    val request = RegisterRequest(
+                        uuid = uuid,
+                        fingerprint = fingerprint,
+                        platform = "android",
+                        pushToken = "",
+                        model = model,
+                        osVersion = osVersion
+                    )
+
+                    val response = authApi.registerDevice(request)
+                    if (response.isSuccessful && response.body() != null) {
+                        val regResponse = response.body()!!
+                        tokenManager.saveDeviceId(regResponse.deviceId)
+                        tokenManager.saveTokens(
+                            accessToken = regResponse.tokens.accessToken,
+                            refreshToken = regResponse.tokens.refreshToken
+                        )
+                        tokenManager.savePairCode(regResponse.pairCode)
+                        
+                        token = regResponse.tokens.accessToken
+                        deviceId = regResponse.deviceId
+                        
+                        Log.i("WebSocketManager", "Device registered successfully! DeviceId: $deviceId, PairCode: ${regResponse.pairCode}")
+                    } else {
+                        val errBody = response.errorBody()?.string()
+                        Log.e("WebSocketManager", "Device registration failed: ${response.code()} / $errBody")
+                        isConnecting = false
+                        triggerReconnection()
+                        return@launch
+                    }
+                }
+
+                // Connect to WebSocket with credentials ready
+                connectWebSocket()
+            } catch (e: Exception) {
+                Log.e("WebSocketManager", "Error in connect/register flow", e)
+                isConnecting = false
+                triggerReconnection()
+            }
+        }
+    }
+
+    private fun connectWebSocket() {
         val request = Request.Builder()
             .url(serverUrl)
             .build()
@@ -91,8 +153,14 @@ class WebSocketManager(
     }
 
     private fun authenticate(ws: WebSocket) {
-        val token = tokenManager.getAccessToken() ?: return
-        val deviceId = tokenManager.getDeviceId() ?: return
+        val token = tokenManager.getAccessToken()
+        val deviceId = tokenManager.getDeviceId()
+        
+        if (token.isNullOrEmpty() || deviceId.isNullOrEmpty()) {
+            Log.e("WebSocketManager", "Cannot authenticate: Token or DeviceID is null/empty")
+            ws.close(1008, "Credentials missing")
+            return
+        }
         
         val authMessage = mapOf(
             "type" to "auth",
