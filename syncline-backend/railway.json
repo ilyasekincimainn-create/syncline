@@ -5,11 +5,12 @@
     "buildCommand": "npm install && npm run build"
   },
   "deploy": {
+    "startCommand": "node services/auth-service/dist/index.js",
     "numReplicas": 1,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10,
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 10,
+    "healthcheckTimeout": 30,
     "sleepApplication": false
   }
 }
