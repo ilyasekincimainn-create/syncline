@@ -39,7 +39,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const fastify_1 = __importDefault(require("fastify"));
 const cors_1 = __importDefault(require("@fastify/cors"));
 const rate_limit_1 = __importDefault(require("@fastify/rate-limit"));
+const websocket_1 = __importDefault(require("@fastify/websocket"));
 const auth_1 = require("./routes/auth");
+const server_1 = require("./websocket/server");
 const dotenv = __importStar(require("dotenv"));
 dotenv.config();
 const fastify = (0, fastify_1.default)({
@@ -64,16 +66,37 @@ async function main() {
             max: 100,
             timeWindow: '1 minute',
         });
+        // Register @fastify/websocket
+        await fastify.register(websocket_1.default, {
+            options: {
+                maxPayload: 1048576, // 1MB
+            }
+        });
+        // Define websocket route
+        fastify.get('/ws', { websocket: true }, () => {
+            // Handled by initWebSocketServer through fastify.websocketServer
+        });
+        // Initialize custom wss logic by hooking to fastify's server
+        fastify.ready((err) => {
+            if (err)
+                throw err;
+            const wss = fastify.websocketServer;
+            if (!wss) {
+                throw new Error('WebSocket server was not initialized');
+            }
+            (0, server_1.initWebSocketServer)(wss);
+            console.log('Sync WebSocket server integrated and initialized successfully.');
+        });
         // Register routes
         await fastify.register(auth_1.authRoutes, { prefix: '/api/auth' });
         // Health check
         fastify.get('/health', async () => {
-            return { status: 'healthy', service: 'auth-service', timestamp: new Date().toISOString() };
+            return { status: 'healthy', service: 'auth-sync-combined-service', timestamp: new Date().toISOString() };
         });
         const port = parseInt(process.env.PORT || '3001', 10);
         const host = process.env.HOST || '0.0.0.0';
         await fastify.listen({ port, host });
-        console.log(`Auth Service is running on http://${host}:${port}`);
+        console.log(`Combined Auth & Sync Service is running on http://${host}:${port}`);
     }
     catch (error) {
         fastify.log.error(error);

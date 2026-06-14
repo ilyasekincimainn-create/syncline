@@ -24,8 +24,8 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    private const val BASE_URL = "https://syncline-auth-production.up.railway.app/"
-    private const val WS_URL = "wss://syncline-sync-production.up.railway.app/ws"
+    private const val BASE_URL = "https://syncline-production.up.railway.app/"
+    private const val WS_URL = "wss://syncline-production.up.railway.app/ws"
 
     @Provides
     @Singleton
