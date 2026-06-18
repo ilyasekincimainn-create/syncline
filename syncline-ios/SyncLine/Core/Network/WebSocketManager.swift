@@ -9,7 +9,7 @@ class WebSocketManager: NSObject, URLSessionWebSocketDelegate {
     private var session: URLSession?
     
     private var isConnected = false
-    private let url = URL(string: "ws://localhost:3000/ws")!
+    private let url = URL(string: "wss://syncline-production.up.railway.app/ws")!
     
     let messagePublisher = PassthroughSubject<String, Never>()
     let connectionPublisher = CurrentValueSubject<Bool, Never>(false)
