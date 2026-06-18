@@ -94,9 +94,15 @@ object AppModule {
         tokenManager: TokenManager,
         authApi: AuthApi
     ): WebSocketManager {
+        val wsClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .build()
+
         return WebSocketManager(
             context = context,
-            client = okHttpClient,
+            client = wsClient,
             tokenManager = tokenManager,
             authApi = authApi,
             serverUrl = WS_URL

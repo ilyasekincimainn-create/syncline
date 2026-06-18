@@ -48,6 +48,7 @@ class WebSocketManager(
                 var deviceId = tokenManager.getDeviceId()
 
                 if (token.isNullOrEmpty() || deviceId.isNullOrEmpty()) {
+                    Log.d("WebSocketManager", "register started")
                     Log.d("WebSocketManager", "Device not registered or tokens missing. Registering device...")
                     
                     val uuid = DeviceFingerprint.getUuid(context)
@@ -77,6 +78,7 @@ class WebSocketManager(
                         token = regResponse.tokens.accessToken
                         deviceId = regResponse.deviceId
                         
+                        Log.d("WebSocketManager", "register success: token=$token")
                         Log.i("WebSocketManager", "Device registered successfully! DeviceId: $deviceId, PairCode: ${regResponse.pairCode}")
                     } else {
                         val errBody = response.errorBody()?.string()
@@ -98,12 +100,14 @@ class WebSocketManager(
     }
 
     private fun connectWebSocket() {
+        Log.d("WebSocketManager", "ws connecting to URL: $serverUrl")
         val request = Request.Builder()
             .url(serverUrl)
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d("WebSocketManager", "ws opened")
                 Log.d("WebSocketManager", "WebSocket Connection opened. Authenticating...")
                 authenticate(webSocket)
             }
@@ -144,6 +148,7 @@ class WebSocketManager(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.d("WebSocketManager", "ws error: ${t.message}")
                 Log.e("WebSocketManager", "Failure: ${t.message}", t)
                 _connectionState.value = false
                 isConnecting = false
