@@ -58,12 +58,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             SyncLineTheme {
                 val isConnected by webSocketManager.connectionState.collectAsState()
-                var pairCode by remember { mutableStateOf("******") }
-                
-                LaunchedEffect(Unit) {
-                    pairCode = tokenManager.getPairCode() ?: "******"
-                }
-
+                val pairCode by webSocketManager.pairCode.collectAsState()
+ 
                 DashboardScreen(
                     isConnected = isConnected,
                     pairCode = pairCode,

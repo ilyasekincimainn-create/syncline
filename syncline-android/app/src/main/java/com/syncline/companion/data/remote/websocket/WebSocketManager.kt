@@ -5,6 +5,7 @@ import android.util.Log
 import com.google.gson.Gson
 import com.syncline.companion.data.remote.api.AuthApi
 import com.syncline.companion.data.remote.dto.RegisterRequest
+import com.syncline.companion.data.remote.dto.RefreshRequest
 import com.syncline.companion.security.DeviceFingerprint
 import com.syncline.companion.security.TokenManager
 import kotlinx.coroutines.*
@@ -32,6 +33,9 @@ class WebSocketManager(
     private val _incomingMessages = MutableSharedFlow<String>(extraBufferCapacity = 100)
     val incomingMessages: SharedFlow<String> = _incomingMessages
 
+    private val _pairCode = MutableStateFlow("******")
+    val pairCode: StateFlow<String> = _pairCode
+
     private var reconnectDelay = 1000L
     private val maxReconnectDelay = 30000L
     private var isConnecting = false
@@ -39,6 +43,10 @@ class WebSocketManager(
 
     private var heartbeatJob: Job? = null
     private var authTimeoutJob: Job? = null
+
+    init {
+        _pairCode.value = tokenManager.getPairCode() ?: "******"
+    }
 
     private fun setConnectionState(isConnected: Boolean) {
         val oldState = _connectionState.value
@@ -52,7 +60,7 @@ class WebSocketManager(
         stopHeartbeat()
         heartbeatJob = scope.launch {
             while (isActive) {
-                delay(20000) // Send ping every 20 seconds
+                delay(15000) // Send ping every 15 seconds
                 Log.d("WebSocketManager", "Sending client-side application heartbeat ping...")
                 sendHeartbeatDirect()
             }
@@ -119,6 +127,7 @@ class WebSocketManager(
                             refreshToken = regResponse.tokens.refreshToken
                         )
                         tokenManager.savePairCode(regResponse.pairCode)
+                        _pairCode.value = regResponse.pairCode
                         
                         token = regResponse.tokens.accessToken
                         deviceId = regResponse.deviceId
@@ -134,6 +143,7 @@ class WebSocketManager(
                     }
                 } else {
                     Log.d("WebSocketManager", "Using saved credentials for connection. Device ID: $deviceId")
+                    _pairCode.value = tokenManager.getPairCode() ?: "******"
                 }
 
                 // Connect to WebSocket with credentials ready
@@ -184,11 +194,46 @@ class WebSocketManager(
                             reconnectDelay = 1000L // Reset backoff
                             startHeartbeat()
                         } else if (type == "auth_fail") {
-                            Log.e("WebSocketManager", "Authentication failed! Clearing tokens and triggering re-registration...")
+                            val reason = (messageMap["payload"] as? Map<*, *>)?.get("reason") ?: "Unknown"
+                            Log.e("WebSocketManager", "Authentication failed! Reason: $reason")
                             authTimeoutJob?.cancel()
-                            tokenManager.clear()
-                            disconnect()
-                            triggerReconnection()
+                            
+                            // Try to refresh token
+                            val refreshToken = tokenManager.getRefreshToken()
+                            if (!refreshToken.isNullOrEmpty()) {
+                                Log.d("WebSocketManager", "Attempting to refresh token...")
+                                try {
+                                    val response = authApi.refreshToken(RefreshRequest(refreshToken))
+                                    if (response.isSuccessful && response.body() != null) {
+                                        val refreshResponse = response.body()!!
+                                        tokenManager.saveTokens(
+                                            accessToken = refreshResponse.tokens.accessToken,
+                                            refreshToken = refreshResponse.tokens.refreshToken
+                                        )
+                                        Log.d("WebSocketManager", "Token refreshed successfully. Reconnecting...")
+                                        cleanupConnection()
+                                        triggerReconnection()
+                                    } else {
+                                        Log.e("WebSocketManager", "Token refresh failed: ${response.code()}. Clearing credentials and re-registering...")
+                                        tokenManager.clear()
+                                        _pairCode.value = "******"
+                                        cleanupConnection()
+                                        triggerReconnection()
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("WebSocketManager", "Error refreshing token. Clearing credentials...", e)
+                                    tokenManager.clear()
+                                    _pairCode.value = "******"
+                                    cleanupConnection()
+                                    triggerReconnection()
+                                }
+                            } else {
+                                Log.e("WebSocketManager", "No refresh token available. Clearing credentials and re-registering...")
+                                tokenManager.clear()
+                                _pairCode.value = "******"
+                                cleanupConnection()
+                                triggerReconnection()
+                            }
                         } else {
                             _incomingMessages.emit(text)
                         }
@@ -284,13 +329,17 @@ class WebSocketManager(
         return ws.send(json)
     }
 
-    fun disconnect() {
-        shouldReconnect = false
+    private fun cleanupConnection() {
         stopHeartbeat()
         authTimeoutJob?.cancel()
-        webSocket?.close(1000, "App closed")
+        webSocket?.close(1000, "Clean up")
         webSocket = null
         setConnectionState(false)
         isConnecting = false
+    }
+
+    fun disconnect() {
+        shouldReconnect = false
+        cleanupConnection()
     }
 }
