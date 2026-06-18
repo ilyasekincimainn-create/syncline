@@ -1,0 +1,25 @@
+name: SyncLine
+options:
+  bundleIdPrefix: com.syncline
+targets:
+  SyncLine:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: SyncLine
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.syncline.companion
+      INFOPLIST_FILE: SyncLine/Resources/Info.plist
+      CODE_SIGN_ENTITLEMENTS: SyncLine/Resources/SyncLine.entitlements
+      DEVELOPMENT_TEAM: ""
+      CODE_SIGN_IDENTITY: ""
+      CODE_SIGNING_REQUIRED: "NO"
+      CODE_SIGNING_ALLOWED: "NO"
+    dependencies:
+      - package: WebRTC
+        product: WebRTC
+packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    from: 115.0.0
