@@ -232,6 +232,10 @@ export function handleWebSocketConnection(ws: WebSocket, req: FastifyRequest) {
     }
   });
 
+  ws.on('ping', () => {
+    clientConn.lastPing = Date.now();
+  });
+
   ws.on('close', () => {
     clearInterval(pingInterval);
     if (clientConn.deviceId) {

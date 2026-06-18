@@ -211,6 +211,10 @@ export function initWebSocketServer(wss: any) {
       }
     });
 
+    ws.on('ping', () => {
+      clientConn.lastPing = Date.now();
+    });
+
     ws.on('close', () => {
       clearInterval(pingInterval);
       if (clientConn.deviceId) {

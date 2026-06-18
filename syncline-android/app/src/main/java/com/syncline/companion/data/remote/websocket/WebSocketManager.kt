@@ -37,6 +37,50 @@ class WebSocketManager(
     private var isConnecting = false
     private var shouldReconnect = true
 
+    private var heartbeatJob: Job? = null
+    private var authTimeoutJob: Job? = null
+
+    private fun setConnectionState(isConnected: Boolean) {
+        val oldState = _connectionState.value
+        if (oldState != isConnected) {
+            _connectionState.value = isConnected
+            Log.d("WebSocketManager", "Connection state changed: $oldState -> $isConnected")
+        }
+    }
+
+    private fun startHeartbeat() {
+        stopHeartbeat()
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                delay(20000) // Send ping every 20 seconds
+                Log.d("WebSocketManager", "Sending client-side application heartbeat ping...")
+                sendHeartbeatDirect()
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
+    private fun sendHeartbeatDirect() {
+        val ws = webSocket ?: return
+        val message = mapOf(
+            "type" to "heartbeat_ping",
+            "id" to "heartbeat_${System.currentTimeMillis()}",
+            "timestamp" to System.currentTimeMillis(),
+            "payload" to mapOf("uptime" to 0, "queueSize" to 0)
+        )
+        val json = gson.toJson(message)
+        try {
+            val sent = ws.send(json)
+            Log.d("WebSocketManager", "Application heartbeat sent: $sent")
+        } catch (e: Exception) {
+            Log.e("WebSocketManager", "Failed to send application heartbeat", e)
+        }
+    }
+
     fun connect() {
         if (isConnecting || _connectionState.value) return
         isConnecting = true
@@ -46,6 +90,7 @@ class WebSocketManager(
             try {
                 var token = tokenManager.getAccessToken()
                 var deviceId = tokenManager.getDeviceId()
+                Log.d("WebSocketManager", "connect() flow started. accessToken exists: ${!token.isNullOrEmpty()}, deviceId: $deviceId")
 
                 if (token.isNullOrEmpty() || deviceId.isNullOrEmpty()) {
                     Log.d("WebSocketManager", "register started")
@@ -87,6 +132,8 @@ class WebSocketManager(
                         triggerReconnection()
                         return@launch
                     }
+                } else {
+                    Log.d("WebSocketManager", "Using saved credentials for connection. Device ID: $deviceId")
                 }
 
                 // Connect to WebSocket with credentials ready
@@ -105,11 +152,22 @@ class WebSocketManager(
             .url(serverUrl)
             .build()
 
+        webSocket?.cancel() // Cancel previous connection if any
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d("WebSocketManager", "ws opened")
                 Log.d("WebSocketManager", "WebSocket Connection opened. Authenticating...")
                 authenticate(webSocket)
+
+                // Set 10-second authentication timeout
+                authTimeoutJob?.cancel()
+                authTimeoutJob = scope.launch {
+                    delay(10000)
+                    if (isActive && !_connectionState.value) {
+                        Log.e("WebSocketManager", "Authentication timed out (10s). Cancelling WebSocket connection...")
+                        webSocket.cancel()
+                    }
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -120,12 +178,17 @@ class WebSocketManager(
                         
                         if (type == "auth_ok") {
                             Log.d("WebSocketManager", "Authenticated successfully!")
-                            _connectionState.value = true
+                            authTimeoutJob?.cancel()
+                            setConnectionState(true)
                             isConnecting = false
                             reconnectDelay = 1000L // Reset backoff
+                            startHeartbeat()
                         } else if (type == "auth_fail") {
-                            Log.e("WebSocketManager", "Authentication failed!")
+                            Log.e("WebSocketManager", "Authentication failed! Clearing tokens and triggering re-registration...")
+                            authTimeoutJob?.cancel()
+                            tokenManager.clear()
                             disconnect()
+                            triggerReconnection()
                         } else {
                             _incomingMessages.emit(text)
                         }
@@ -137,21 +200,37 @@ class WebSocketManager(
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.w("WebSocketManager", "Closing: $code / $reason")
-                _connectionState.value = false
+                setConnectionState(false)
+                stopHeartbeat()
+                authTimeoutJob?.cancel()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.w("WebSocketManager", "Closed: $code / $reason")
-                _connectionState.value = false
+                Log.w("WebSocketManager", "Closed: $code / $reason. Triggering reconnect...")
+                setConnectionState(false)
                 isConnecting = false
+                stopHeartbeat()
+                authTimeoutJob?.cancel()
+                if (this@WebSocketManager.webSocket === webSocket) {
+                    this@WebSocketManager.webSocket = null
+                }
                 triggerReconnection()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.d("WebSocketManager", "ws error: ${t.message}")
-                Log.e("WebSocketManager", "Failure: ${t.message}", t)
-                _connectionState.value = false
+                val responseDetails = if (response != null) {
+                    "Code: ${response.code}, Message: ${response.message}"
+                } else {
+                    "None"
+                }
+                Log.e("WebSocketManager", "Failure: ${t.message}. Response details: $responseDetails. Triggering reconnect...", t)
+                setConnectionState(false)
                 isConnecting = false
+                stopHeartbeat()
+                authTimeoutJob?.cancel()
+                if (this@WebSocketManager.webSocket === webSocket) {
+                    this@WebSocketManager.webSocket = null
+                }
                 triggerReconnection()
             }
         })
@@ -183,7 +262,7 @@ class WebSocketManager(
     private fun triggerReconnection() {
         if (!shouldReconnect) return
         scope.launch {
-            Log.d("WebSocketManager", "Reconnecting in ${reconnectDelay}ms...")
+            Log.d("WebSocketManager", "Reconnection triggered. Delay: ${reconnectDelay}ms")
             delay(reconnectDelay)
             reconnectDelay = (reconnectDelay * 2).coerceAtMost(maxReconnectDelay)
             connect()
@@ -207,9 +286,12 @@ class WebSocketManager(
 
     fun disconnect() {
         shouldReconnect = false
+        stopHeartbeat()
+        authTimeoutJob?.cancel()
         webSocket?.close(1000, "App closed")
         webSocket = null
-        _connectionState.value = false
+        setConnectionState(false)
         isConnecting = false
     }
+}
 }
