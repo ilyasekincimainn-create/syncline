@@ -1,6 +1,7 @@
 name: SyncLine
 options:
   bundleIdPrefix: com.syncline
+  xcodeVersion: "15.0"
 targets:
   SyncLine:
     type: application
