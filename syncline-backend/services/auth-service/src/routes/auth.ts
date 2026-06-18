@@ -11,7 +11,7 @@ export async function authRoutes(fastify: FastifyInstance) {
   fastify.post('/register', async (request: FastifyRequest, reply: FastifyReply) => {
     const { uuid, fingerprint, platform, pushToken, model, osVersion } = request.body as any;
 
-    if (!uuid || !fingerprint || !platform || !pushToken) {
+    if (!uuid || !fingerprint || !platform || typeof pushToken !== 'string') {
       return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
     }
 

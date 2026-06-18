@@ -43,7 +43,7 @@ async function authRoutes(fastify) {
     // POST /register
     fastify.post('/register', async (request, reply) => {
         const { uuid, fingerprint, platform, pushToken, model, osVersion } = request.body;
-        if (!uuid || !fingerprint || !platform || !pushToken) {
+        if (!uuid || !fingerprint || !platform || typeof pushToken !== 'string') {
             return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
         }
         const client = await db_1.pool.connect();
