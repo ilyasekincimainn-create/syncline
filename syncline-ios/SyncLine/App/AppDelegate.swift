@@ -29,7 +29,7 @@ class AppDelegate: NSObject, UIApplicationDelegate, PKPushRegistryDelegate {
         didUpdate pushCredentials: PKPushCredentials,
         for type: PKPushType
     ) {
-        let token = pushCredentials.pushToken.map { String(format: "%02.2hhx", $0) }.joined()
+        let token = pushCredentials.token.map { String(format: "%02.2hhx", $0) }.joined()
         print("VoIP Push Token: \(token)")
         // Share this token with the backend so it can target VoIP pushes here.
         UserDefaults.standard.set(token, forKey: "apns_voip_token")

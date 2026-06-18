@@ -39,7 +39,7 @@ class MessageViewModel: ObservableObject {
     
     private func handleIncomingWebSocketMessage(_ jsonString: String) {
         guard let data = jsonString.data(using: .utf8),
-              let message = try? JSONDecoder().decode(WSMessage.self) else {
+              let message = try? JSONDecoder().decode(WSMessage.self, from: data) else {
             return
         }
         
@@ -118,7 +118,7 @@ class MessageViewModel: ObservableObject {
     
     private func loadCachedMessages() {
         if let data = UserDefaults.standard.data(forKey: cacheKey),
-           let decoded = try? JSONDecoder().decode([SmsEvent].self) {
+           let decoded = try? JSONDecoder().decode([SmsEvent].self, from: data) {
             self.smsMessages = decoded
         } else {
             // Load beautiful placeholder data for preview/first-run

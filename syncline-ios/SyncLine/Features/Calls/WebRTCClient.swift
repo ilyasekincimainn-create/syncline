@@ -148,6 +148,10 @@ extension WebRTCClient: RTCPeerConnectionDelegate {
     
     func peerConnectionShouldTriggerIceGathering(_ peerConnection: RTCPeerConnection) {}
     
+    func peerConnectionShouldNegotiate(_ peerConnection: RTCPeerConnection) {
+        print("WebRTC: peerConnectionShouldNegotiate")
+    }
+    
     func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCIceConnectionState) {
         print("WebRTC: ICE Connection state changed: \(newState.rawValue)")
         onConnectionStateChange?(newState)

@@ -61,7 +61,7 @@ class CallViewModel: ObservableObject {
     
     private func handleWebSocketMessage(_ jsonString: String) {
         guard let data = jsonString.data(using: .utf8),
-              let message = try? JSONDecoder().decode(WSMessage.self) else {
+              let message = try? JSONDecoder().decode(WSMessage.self, from: data) else {
             return
         }
         
@@ -223,7 +223,7 @@ class CallViewModel: ObservableObject {
         let message = WSMessage(
             type: type,
             id: "\(type)_\(Int(Date().timeIntervalSince1970))",
-            timestamp: Int(Date().timeIntervalSince1970 * 1000),
+            timestamp: Int64(Date().timeIntervalSince1970 * 1000),
             payload: payload
         )
         
@@ -259,7 +259,7 @@ class CallViewModel: ObservableObject {
         let message = WSMessage(
             type: "webrtc_candidate",
             id: "candidate_\(Int(Date().timeIntervalSince1970))",
-            timestamp: Int(Date().timeIntervalSince1970 * 1000),
+            timestamp: Int64(Date().timeIntervalSince1970 * 1000),
             payload: payload
         )
         

@@ -1,6 +1,7 @@
 import Foundation
 import PushKit
 import Combine
+import UIKit
 
 class PushKitHandler: NSObject, ObservableObject {
     

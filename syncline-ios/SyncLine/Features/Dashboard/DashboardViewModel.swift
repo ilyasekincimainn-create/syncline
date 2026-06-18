@@ -51,7 +51,7 @@ class DashboardViewModel: ObservableObject {
     
     private func handleWebSocketMessage(_ jsonString: String) {
         guard let data = jsonString.data(using: .utf8),
-              let message = try? JSONDecoder().decode(WSMessage.self) else {
+              let message = try? JSONDecoder().decode(WSMessage.self, from: data) else {
             return
         }
         
@@ -76,7 +76,7 @@ class DashboardViewModel: ObservableObject {
         let syncMsg = WSMessage(
             type: "sync_request",
             id: "sync_req_\(Int(Date().timeIntervalSince1970))",
-            timestamp: Int(Date().timeIntervalSince1970 * 1000),
+            timestamp: Int64(Date().timeIntervalSince1970 * 1000),
             payload: WSMessagePayload(
                 accessToken: nil,
                 deviceId: nil,
@@ -101,8 +101,8 @@ class DashboardViewModel: ObservableObject {
     
     private func updateCounts() {
         // SMS Count
-        if let smsData = UserDefaults.standard.data(forKey: "cached_sms_messages"),
-           let sms = try? JSONDecoder().decode([SmsEvent].self) {
+         if let smsData = UserDefaults.standard.data(forKey: "cached_sms_messages"),
+            let sms = try? JSONDecoder().decode([SmsEvent].self, from: smsData) {
             totalSmsCount = sms.count
         } else {
             totalSmsCount = 0
@@ -119,8 +119,8 @@ class DashboardViewModel: ObservableObject {
     // MARK: - Cache Helpers
     
     private func loadCachedCalls() {
-        if let data = UserDefaults.standard.data(forKey: callCacheKey),
-           let decoded = try? JSONDecoder().decode([CallEvent].self) {
+         if let data = UserDefaults.standard.data(forKey: callCacheKey),
+            let decoded = try? JSONDecoder().decode([CallEvent].self, from: data) {
             self.callLogs = decoded
         } else {
             loadMockCallData()
