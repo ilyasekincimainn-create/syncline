@@ -34,6 +34,7 @@ export async function authRoutes(fastify: FastifyInstance) {
 
       let userId: string;
       let pairCode = '';
+      let isiOSStandalone = false;
 
       if (devPlatform === 'android') {
         // Android device represents the core source. Ensure there is a user row.
@@ -67,6 +68,7 @@ export async function authRoutes(fastify: FastifyInstance) {
         } else {
           // Stands alone until paired
           userId = uuidv4();
+          isiOSStandalone = true;
         }
       }
 
@@ -79,17 +81,19 @@ export async function authRoutes(fastify: FastifyInstance) {
       const familyId = uuidv4();
       const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
 
-      await client.query(
-        `INSERT INTO refresh_tokens (user_id, device_id, token_hash, family_id, expires_at)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [userId, deviceId, refreshTokenHash, familyId, expiresAt]
-      );
+      if (!isiOSStandalone) {
+        await client.query(
+          `INSERT INTO refresh_tokens (user_id, device_id, token_hash, family_id, expires_at)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [userId, deviceId, refreshTokenHash, familyId, expiresAt]
+        );
+      }
 
       // Audit log
       await client.query(
         `INSERT INTO audit_logs (user_id, device_id, action, details, ip_address)
          VALUES ($1, $2, 'device_register', $3, $4)`,
-        [userId, deviceId, JSON.stringify({ platform: devPlatform }), request.ip]
+        [isiOSStandalone ? null : userId, deviceId, JSON.stringify({ platform: devPlatform }), request.ip]
       );
 
       await client.query('COMMIT');
