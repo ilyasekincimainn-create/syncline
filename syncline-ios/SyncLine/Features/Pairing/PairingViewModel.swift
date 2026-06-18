@@ -37,7 +37,7 @@ class PairingViewModel: ObservableObject {
         
         let pushToken = UserDefaults.standard.string(forKey: "apns_voip_token") ?? "apns_mock_token_for_simulator"
         
-        let registerUrl = APIClient.shared.baseURL.appendingPathComponent("register").absoluteString
+        let registerUrl = APIClient.shared.baseURL.appendingPathComponent("api/auth/register").absoluteString
         print("Register request initiating to URL: \(registerUrl)")
         
         APIClient.shared.registerDevice(
@@ -70,7 +70,7 @@ class PairingViewModel: ObservableObject {
         registerDeviceAndFetchCredentials { [weak self] in
             guard let self = self else { return }
             
-            let pairUrl = APIClient.shared.baseURL.appendingPathComponent("pair").absoluteString
+            let pairUrl = APIClient.shared.baseURL.appendingPathComponent("api/auth/pair").absoluteString
             print("Pairing request initiating to URL: \(pairUrl)")
             
             APIClient.shared.pairDevice(code: code) { result in
@@ -109,7 +109,7 @@ class PairingViewModel: ObservableObject {
                             self.pairingError = "Pairing Response is missing device identifiers."
                         }
                     case .failure(let error):
-                        let pairUrl = APIClient.shared.baseURL.appendingPathComponent("pair").absoluteString
+                        let pairUrl = APIClient.shared.baseURL.appendingPathComponent("api/auth/pair").absoluteString
                         self.pairingError = "Could not connect to the server: [\(pairUrl)] \(error.localizedDescription)"
                     }
                 }

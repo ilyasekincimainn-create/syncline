@@ -3,7 +3,7 @@ import Foundation
 class APIClient {
     
     static let shared = APIClient()
-    let baseURL = URL(string: "https://syncline-production.up.railway.app/api/auth")!
+    let baseURL = URL(string: "https://syncline-production.up.railway.app")!
     
     private init() {}
     
@@ -15,7 +15,7 @@ class APIClient {
         osVersion: String,
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
-        let url = baseURL.appendingPathComponent("register")
+        let url = baseURL.appendingPathComponent("api/auth/register")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -56,7 +56,7 @@ class APIClient {
     }
     
     func pairDevice(code: String, completion: @escaping (Result<[String: Any], Error>) -> Void) {
-        let url = baseURL.appendingPathComponent("pair")
+        let url = baseURL.appendingPathComponent("api/auth/pair")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
