@@ -294,4 +294,3 @@ class WebSocketManager(
         isConnecting = false
     }
 }
-}
