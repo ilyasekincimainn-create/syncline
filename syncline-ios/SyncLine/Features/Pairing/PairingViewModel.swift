@@ -80,8 +80,17 @@ class PairingViewModel: ObservableObject {
                     case .success(let response):
                         print("Pairing response: \(response)")
                         
-                        if let pairedId = response["deviceId"] as? String {
+                        let pairedId = (response["androidDeviceId"] as? String) ?? (response["deviceId"] as? String)
+                        
+                        if let pairedId = pairedId {
                             KeychainHelper.shared.save(pairedId, service: "syncline", account: "paired_device_id")
+                            
+                            // Save the new access token returned by pairing
+                            if let tokens = response["tokens"] as? [String: Any],
+                               let accessToken = tokens["accessToken"] as? String {
+                                KeychainHelper.shared.save(accessToken, service: "syncline", account: "access_token")
+                                print("Pairing access token updated in Keychain.")
+                            }
                             
                             // Check if symmetric key was returned (common in key exchange protocols)
                             if let symKey = response["symmetricKey"] as? String {
@@ -95,9 +104,18 @@ class PairingViewModel: ObservableObject {
                             WebSocketManager.shared.disconnect()
                             WebSocketManager.shared.connect()
                         } else if let payload = response["payload"] as? [String: Any],
-                                  let pairedId = payload["deviceId"] as? String {
+                                  let pairedId = (payload["androidDeviceId"] as? String) ?? (payload["deviceId"] as? String) {
                             // Backup payload check
                             KeychainHelper.shared.save(pairedId, service: "syncline", account: "paired_device_id")
+                            
+                            if let tokens = payload["tokens"] as? [String: Any],
+                               let accessToken = tokens["accessToken"] as? String {
+                                KeychainHelper.shared.save(accessToken, service: "syncline", account: "access_token")
+                            } else if let tokens = response["tokens"] as? [String: Any],
+                                      let accessToken = tokens["accessToken"] as? String {
+                                KeychainHelper.shared.save(accessToken, service: "syncline", account: "access_token")
+                            }
+                            
                             if let symKey = payload["symmetricKey"] as? String {
                                 CryptoManager.shared.setSymmetricKey(symKey)
                             }
